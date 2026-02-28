@@ -24,10 +24,10 @@ from neo_pir_omr.core.security import SecurityPolicy, validate_file_bytes
 
 
 # =========================
-# Page config + style
+# Configuration page + style
 # =========================
 st.set_page_config(
-    page_title="NEO PI-R — OMR Scanner & Scoring (Scientific)",
+    page_title="NEO PI-R — Scanner OMR & Cotation (Version scientifique)",
     page_icon="🧾",
     layout="wide",
 )
@@ -49,14 +49,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🧾 نظام المسح الضوئي (OMR) لاختبار NEO PI-R")
+st.title("🧾 NEO PI-R — Scanner OMR & Cotation")
 st.caption(
-    "هدف التطبيق: **مسح ورقة الإجابة** ➜ **استخراج الإجابات** ➜ **حساب الدرجات علمياً** ➜ **إخراج تقرير ورسوم بيانية**."
+    "Objectif : **scanner la feuille de réponses** ➜ **extraire les réponses** ➜ "
+    "**calculer les scores** ➜ **générer des visualisations et exports**."
 )
 
 
 # =========================
-# Helpers
+# Utilitaires
 # =========================
 def _hash_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:16]
@@ -82,14 +83,14 @@ def _pick_norms(
         & (norms["age_max"] >= age)
     ]
     if sub.empty:
-        raise ValueError("لا توجد معايير (norms) مطابقة للجنس/العمر المحددين.")
+        raise ValueError("Aucune norme correspondante (sexe/âge) n’a été trouvée.")
     row = sub.iloc[0]
     return float(row["mean"]), float(row["sd"])
 
 
 def _z_t(raw: float, mean: float, sd: float) -> Dict[str, float]:
     if sd <= 0:
-        raise ValueError("قيمة الانحراف المعياري SD غير صحيحة في ملف المعايير.")
+        raise ValueError("Écart-type (SD) invalide dans le fichier de normes.")
     z = (raw - mean) / sd
     t = 50.0 + 10.0 * z
     return {"z": float(z), "t": float(t)}
@@ -105,8 +106,8 @@ def _plot_curve(domain_t: Dict[str, float]):
     ax.plot(x, y, marker="o")
     ax.set_xticks(x, labels)
     ax.set_ylim(20, 80)
-    ax.set_ylabel("T-score")
-    ax.set_title("المنحنى العام لمجالات الشخصية (T-scores)")
+    ax.set_ylabel("Score T")
+    ax.set_title("Profil global — Domaines (Scores T)")
     ax.grid(True, alpha=0.25)
     st.pyplot(fig, clear_figure=True)
 
@@ -124,57 +125,60 @@ def _plot_radar(domain_t: Dict[str, float]):
     ax.fill(angles, values, alpha=0.15)
     ax.set_thetagrids(np.degrees(angles[:-1]), labels)
     ax.set_ylim(20, 80)
-    ax.set_title("خريطة رادارية للمجالات (T-scores)", pad=18)
+    ax.set_title("Radar — Domaines (Scores T)", pad=18)
     st.pyplot(fig, clear_figure=True)
 
 
 # =========================
-# Sidebar
+# Barre latérale
 # =========================
 policy = SecurityPolicy(max_upload_mb=15)
 
 with st.sidebar:
-    st.header("الإعدادات العلمية")
-    st.caption("اضبط الحساسية عند الحاجة. الإعدادات الافتراضية غالباً كافية.")
+    st.header("Paramètres (scientifiques)")
+    st.caption("Ajustez uniquement si nécessaire ; les valeurs par défaut conviennent souvent.")
 
-    mark_threshold = st.slider("عتبة العلامة (mark_threshold)", 0.5, 6.0, 1.7, 0.1)
-    ambiguity_gap = st.slider("فارق الغموض (ambiguity_gap)", 0.1, 6.0, 0.9, 0.1)
-
-    st.divider()
-    st.subheader("الحبر")
-    detect_blue = st.checkbox("التقاط الحبر الأزرق", value=True)
-    detect_black = st.checkbox("التقاط الحبر الأسود", value=True)
-    black_dark_thresh = st.slider("عتبة السواد (black_dark_thresh)", 60, 180, 110, 1)
-    black_baseline_quantile = st.slider("Baseline quantile للحبر الأسود", 0.0, 50.0, 15.0, 1.0)
+    mark_threshold = st.slider("Seuil de marque (mark_threshold)", 0.5, 6.0, 1.7, 0.1)
+    ambiguity_gap = st.slider("Seuil d’ambiguïté (ambiguity_gap)", 0.1, 6.0, 0.9, 0.1)
 
     st.divider()
-    st.subheader("المعايير والتقنين")
-    sex = st.selectbox("الجنس (للـ norms)", options=["M", "F"], index=0)
-    age = st.number_input("العمر", min_value=10, max_value=90, value=25, step=1)
-    st.caption("المعايير الموجودة حالياً **تجريبية** داخل الملف norms.csv. يمكنك لاحقاً استبدالها بمعاييرك الرسمية.")
+    st.subheader("Encre")
+    detect_blue = st.checkbox("Détecter l’encre bleue", value=True)
+    detect_black = st.checkbox("Détecter l’encre noire", value=True)
+    black_dark_thresh = st.slider("Seuil noir (black_dark_thresh)", 60, 180, 110, 1)
+    black_baseline_quantile = st.slider("Quantile baseline noir", 0.0, 50.0, 15.0, 1.0)
 
     st.divider()
-    st.subheader("ملفات")
-    key_file = st.file_uploader("ملف مفتاح التصحيح scoring_key.csv", type=["csv"])
-    norms_file = st.file_uploader("ملف المعايير norms.csv (اختياري)", type=["csv"])
+    st.subheader("Normes (Z / T)")
+    sex = st.selectbox("Sexe (pour normes)", options=["M", "F"], index=0)
+    age = st.number_input("Âge", min_value=10, max_value=90, value=25, step=1)
+    st.caption(
+        "Les normes incluses dans `norms.csv` sont **indicatives**. "
+        "Vous pouvez charger vos normes officielles via le fichier ci-dessous."
+    )
+
+    st.divider()
+    st.subheader("Fichiers")
+    key_file = st.file_uploader("Clé de cotation (scoring_key.csv)", type=["csv"])
+    norms_file = st.file_uploader("Normes (norms.csv) — optionnel", type=["csv"])
 
 
 # =========================
-# Inputs
+# Entrées
 # =========================
 left, right = st.columns([1.25, 0.75], vertical_alignment="top")
 with left:
-    img_file = st.file_uploader("📷 ارفع صورة/سكانر ورقة الإجابة", type=["jpg", "jpeg", "png", "webp"])
+    img_file = st.file_uploader("📷 Importer une image/scan de la feuille", type=["jpg", "jpeg", "png", "webp"])
 with right:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("نصائح لنتيجة دقيقة")
+    st.subheader("Conseils pour une détection fiable")
     st.markdown(
         """
-- صورة واضحة بدون اهتزاز  
-- الورقة كاملة داخل الإطار  
-- إضاءة متجانسة بدون ظل قوي  
-- تجنب الانعكاس اللامع  
-- استخدم قلم أزرق/أسود واضح  
+- Photo nette (sans flou)  
+- Feuille complète dans le cadre  
+- Lumière homogène (éviter les ombres fortes)  
+- Éviter les reflets  
+- Stylo bleu/noir bien visible  
 """
     )
     st.markdown("</div>", unsafe_allow_html=True)
@@ -186,12 +190,11 @@ validate_file_bytes(img_file.name, img_file.size, policy)
 
 img_bytes = img_file.getvalue()
 img_hash = _hash_bytes(img_bytes)
-
 pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
 
 # =========================
-# Load scoring key + norms
+# Chargement clé + normes
 # =========================
 if key_file is not None:
     scoring_key = load_scoring_key_from_bytes(key_file.getvalue())
@@ -206,7 +209,7 @@ else:
 
 
 # =========================
-# Scanner config
+# Configuration scanner
 # =========================
 cfg = OMRConfig(
     mark_threshold=float(mark_threshold),
@@ -221,7 +224,7 @@ scanner = OMRScanner(cfg=cfg)
 
 
 # =========================
-# Run scan (stable)
+# Exécution (stable)
 # =========================
 if "scan_cache" not in st.session_state:
     st.session_state.scan_cache = {}
@@ -229,34 +232,34 @@ if "scan_cache" not in st.session_state:
 cfg_sig = json.dumps(asdict(cfg), sort_keys=True, ensure_ascii=False)
 cache_key = f"{img_hash}:{_hash_bytes(cfg_sig.encode('utf-8'))}:key"
 
-run_scan = st.button("🚀 تنفيذ المسح والحساب", use_container_width=True)
+run_scan = st.button("🚀 Lancer le scan & la cotation", use_container_width=True)
 
 if run_scan:
-    with st.spinner("جارٍ المسح…"):
+    with st.spinner("Analyse en cours…"):
         result = scanner.scan_pil(pil_img, scoring_key)
     st.session_state.scan_cache[cache_key] = result
 
 result = st.session_state.scan_cache.get(cache_key)
 if result is None:
-    st.info("اضغط زر **تنفيذ المسح والحساب** لبدء المعالجة.")
+    st.info("Cliquez sur **Lancer le scan & la cotation** pour démarrer.")
     st.stop()
 
 
 # =========================
-# Outputs
+# Résultats
 # =========================
-st.success(f"تم المسح بنجاح ✅  (scan_id: {result.scan_id})")
+st.success(f"Scan terminé ✅ (scan_id : {result.scan_id})")
 
 stats = result.diagnostics.get("stats", {})
 proto = result.protocol or {}
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("الأسئلة الفارغة", int(proto.get("n_blank", 0)))
-m2.metric("الغامضة", int(stats.get("ambiguous", 0)))
-m3.metric("ثقة منخفضة", int(stats.get("low_conf", 0)))
-m4.metric("تمّ تعويضها", int(proto.get("imputed", 0)))
+m1.metric("Réponses vides", int(proto.get("n_blank", 0)))
+m2.metric("Ambiguës", int(stats.get("ambiguous", 0)))
+m3.metric("Faible confiance", int(stats.get("low_conf", 0)))
+m4.metric("Imputées", int(proto.get("imputed", 0)))
 
-with st.expander("🔍 تفاصيل تقنية (للتحقق)", expanded=False):
+with st.expander("🔍 Détails techniques (contrôle qualité)", expanded=False):
     vals = list(result.responses_final.values())
     st.json(
         {
@@ -272,26 +275,26 @@ with st.expander("🔍 تفاصيل تقنية (للتحقق)", expanded=False):
 
 v1, v2 = st.columns([1, 1])
 with v1:
-    st.subheader("Overlay (التحقق من التحديد)")
+    st.subheader("Overlay (détection)")
     st.image(result.overlay_bgr[:, :, ::-1], use_container_width=True)
 with v2:
-    st.subheader("Mask (حبر/تحديد — Debug)")
+    st.subheader("Masque (encre) — debug")
     st.image(result.debug_mask, use_container_width=True)
 
 
-# Raw scores
-st.subheader("📌 النتائج الأولية (Raw Scores)")
+# Scores bruts
+st.subheader("📌 Scores bruts")
 c1, c2 = st.columns(2)
 with c1:
-    st.markdown("**مجالات الشخصية (N/E/O/A/C)**")
+    st.markdown("**Domaines (N/E/O/A/C)**")
     st.json(result.domain_scores)
 with c2:
-    st.markdown("**الواجهات (Facets)**")
+    st.markdown("**Facettes**")
     st.json(result.facette_scores)
 
 
-# Normed scores (Z/T)
-st.subheader("📈 النتائج المعيارية (Z / T)")
+# Scores normés
+st.subheader("📈 Scores normés (Z / T)")
 domain_t: Dict[str, float] = {}
 domain_norm_detail: Dict[str, Any] = {}
 
@@ -302,7 +305,7 @@ try:
         domain_t[d] = res["t"]
         domain_norm_detail[d] = {"raw": int(raw), "mean": mean, "sd": sd, **res}
 except Exception as e:
-    st.warning(f"تعذر حساب T-scores من ملف المعايير: {e}")
+    st.warning(f"Impossible de calculer les scores T à partir des normes : {e}")
     domain_norm_detail = {}
 
 if domain_norm_detail:
@@ -315,9 +318,12 @@ if domain_norm_detail:
         _plot_radar(domain_t)
 
 
-# Human review + recompute
-st.subheader("🧑‍🔬 مراجعة بشرية (اختيارية) + إعادة الحساب")
-st.caption("استخدمها فقط إذا كان هناك فراغات/غموض. إعادة الحساب تتم عبر زر مستقل لضمان الاستقرار.")
+# Relecture humaine + recalcul
+st.subheader("🧑‍🔬 Relecture humaine (optionnelle) + recalcul")
+st.caption(
+    "Utiliser uniquement si des items sont vides/ambiguës. "
+    "Le recalcul est déclenché via un bouton pour garantir la stabilité."
+)
 
 flagged = []
 for item_id in range(1, 241):
@@ -325,14 +331,14 @@ for item_id in range(1, 241):
     if md.get("blank") or md.get("ambiguous") or float(md.get("confidence", 1.0)) < 0.55:
         flagged.append(item_id)
 
-with st.expander(f"فتح المراجعة البشرية — العناصر المحتاجة ({len(flagged)})", expanded=False):
+with st.expander(f"Ouvrir la relecture — items à vérifier ({len(flagged)})", expanded=False):
     if not flagged:
-        st.success("لا توجد عناصر تحتاج مراجعة ✅")
+        st.success("Aucun item à relire ✅")
     else:
-        st.warning("قم بتعديل ما يلزم فقط، ثم اضغط زر إعادة الحساب.")
+        st.warning("Corrigez uniquement ce qui est nécessaire, puis cliquez sur le bouton de recalcul.")
         page_size = 12
         page = st.number_input(
-            "الصفحة",
+            "Page",
             min_value=1,
             max_value=max(1, (len(flagged) + page_size - 1) // page_size),
             value=1,
@@ -349,33 +355,33 @@ with st.expander(f"فتح المراجعة البشرية — العناصر ا�
             with col1:
                 st.markdown(f"**Item {item_id}**")
                 st.markdown(
-                    f"<span class='tiny'>confidence: {float(md.get('confidence', 0.0)):.2f}</span>",
+                    f"<span class='tiny'>confiance : {float(md.get('confidence', 0.0)):.2f}</span>",
                     unsafe_allow_html=True,
                 )
             with col2:
                 choice = st.selectbox(
-                    f"تصحيح Item {item_id}",
+                    f"Correction item {item_id}",
                     options=[-1, 0, 1, 2, 3, 4],
                     index=[-1, 0, 1, 2, 3, 4].index(current if current in [-1, 0, 1, 2, 3, 4] else -1),
-                    help="-1 = فارغ ; 0..4 = خيار محدد",
+                    help="-1 = vide ; 0..4 = option sélectionnée",
                     key=f"corr_{item_id}",
                 )
                 if int(choice) != current:
                     corrections[item_id] = int(choice)
 
-        if st.button("✅ تطبيق التصحيحات وإعادة الحساب", use_container_width=True):
+        if st.button("✅ Appliquer les corrections & recalculer", use_container_width=True):
             final_resp = dict(result.responses_final)
             final_resp.update(corrections)
 
             final_after_proto, proto2 = apply_protocol_rules(cfg, final_resp)
             facette_scores2, domain_scores2 = compute_scores(final_after_proto, scoring_key)
 
-            st.success("تمت إعادة الحساب ✅")
+            st.success("Recalcul terminé ✅")
             st.json({"protocol": proto2, "domain_scores": domain_scores2, "facette_scores": facette_scores2})
 
 
 # Exports
-st.subheader("⬇️ تنزيل النتائج")
+st.subheader("⬇️ Exports")
 
 resp_csv = io.StringIO()
 resp_csv.write("item,choice\n")
