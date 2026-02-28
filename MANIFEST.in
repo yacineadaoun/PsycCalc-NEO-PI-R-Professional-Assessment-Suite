@@ -1,2 +1,0 @@
-recursive-include neo_pir_omr/data *.csv
-recursive-include neo_pir_omr/docs *.md
