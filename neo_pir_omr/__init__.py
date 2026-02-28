@@ -1,5 +1,8 @@
-"""NEO PI-R OMR Scanner (Professional Edition)."""
-
-from .core.engine import OMRConfig, OMRScanner, ScanResult
-
-__all__ = ["OMRConfig", "OMRScanner", "ScanResult"]
+neo_pir_omr/
+    __init__.py
+    core/
+        __init__.py   ← IMPORTANT
+        engine.py
+    ui/
+        __init__.py   ← IMPORTANT
+        app_streamlit.py
