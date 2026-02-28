@@ -1,0 +1,8 @@
+scale_type,scale,sex,age_min,age_max,mean,sd
+domain,N,M,18,29,100,15
+domain,E,M,18,29,105,14
+domain,O,M,18,29,110,13
+domain,A,M,18,29,102,12
+domain,C,M,18,29,108,14
+facet,N1,M,18,29,18,4
+facet,N2,M,18,29,16,4
