@@ -13,6 +13,11 @@ import streamlit as st
 from PIL import Image
 import matplotlib.pyplot as plt
 
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+
 from neo_pir_omr.core.engine import (
     OMRScanner,
     OMRConfig,
@@ -24,44 +29,42 @@ from neo_pir_omr.core.security import SecurityPolicy, validate_file_bytes
 
 
 # =============================================================================
-# App config
+# Page config
 # =============================================================================
 st.set_page_config(
-    page_title="NEO PI-R — OMR & Scoring",
+    page_title="NEO PI-R — OMR & Scoring (SaaS)",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # =============================================================================
-# Design system (CSS)
+# Premium UI (CSS)
 # =============================================================================
 st.markdown(
     """
 <style>
-  :root {
+  :root{
     --bg: rgba(255,255,255,0.03);
-    --bd: rgba(255,255,255,0.08);
-    --tx: rgba(255,255,255,0.92);
+    --bd: rgba(255,255,255,0.10);
+    --tx: rgba(255,255,255,0.93);
     --muted: rgba(255,255,255,0.70);
     --ok: rgba(46, 204, 113, 0.18);
     --warn: rgba(241, 196, 15, 0.16);
     --bad: rgba(231, 76, 60, 0.18);
   }
-  .block-container { padding-top: 1.1rem; max-width: 1300px; }
-  h1, h2, h3 { letter-spacing: -0.02em; }
-  .muted { color: var(--muted); }
-  .card {
+  .block-container{ padding-top: 1.1rem; max-width: 1320px; }
+  h1,h2,h3 { letter-spacing:-0.02em; }
+  .muted{ color: var(--muted); }
+  .card{
     background: var(--bg);
     border: 1px solid var(--bd);
     border-radius: 18px;
     padding: 14px 16px;
   }
-  .card-tight { padding: 10px 12px; }
-  .pill {
-    display:inline-flex;
-    align-items:center;
-    gap:8px;
+  .card-tight{ padding: 10px 12px; }
+  .pill{
+    display:inline-flex; align-items:center; gap:8px;
     padding: 6px 10px;
     border-radius: 999px;
     border: 1px solid var(--bd);
@@ -69,25 +72,24 @@ st.markdown(
     font-size: 0.90rem;
     color: var(--muted);
   }
-  .kpi {
+  .kpi{
     background: var(--bg);
     border: 1px solid var(--bd);
     border-radius: 18px;
     padding: 14px 16px;
   }
-  .kpi .label { color: var(--muted); font-size: 0.92rem; }
-  .kpi .value { font-size: 1.7rem; font-weight: 700; color: var(--tx); margin-top: 4px; }
-  .kpi.ok { background: var(--ok); }
-  .kpi.warn { background: var(--warn); }
-  .kpi.bad { background: var(--bad); }
-  .section-title {
+  .kpi .label{ color: var(--muted); font-size: .92rem; }
+  .kpi .value{ font-size: 1.7rem; font-weight: 750; color: var(--tx); margin-top: 4px; }
+  .kpi.ok{ background: var(--ok); }
+  .kpi.warn{ background: var(--warn); }
+  .kpi.bad{ background: var(--bad); }
+  .section-title{
     display:flex; align-items:end; justify-content:space-between;
     margin: 6px 0 10px 0;
   }
-  .section-title .right { color: var(--muted); font-size: 0.92rem; }
-  div[data-testid="stDownloadButton"] button { width: 100%; border-radius: 14px; }
-  div[data-testid="stButton"] button { border-radius: 14px; padding: 0.65rem 0.9rem; }
-  div[data-testid="stFileUploader"] { border-radius: 18px; }
+  .section-title .right{ color: var(--muted); font-size: 0.92rem; }
+  div[data-testid="stDownloadButton"] button{ width:100%; border-radius: 14px; }
+  div[data-testid="stButton"] button{ border-radius: 14px; padding: .65rem .9rem; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -104,21 +106,57 @@ def _download(label: str, data: bytes, name: str, mime: str):
     st.download_button(label, data=data, file_name=name, mime=mime, use_container_width=True)
 
 
-def _load_norms_df() -> pd.DataFrame:
+def _load_norms_df_from_disk() -> pd.DataFrame:
     p = Path(__file__).resolve().parents[1] / "data" / "norms.csv"
     return pd.read_csv(p)
 
 
+def interpret_t(t: float) -> str:
+    # Règle simple, standard, défendable
+    if not np.isfinite(t):
+        return "N/A"
+    if t < 45:
+        return "Faible"
+    if t > 55:
+        return "Élevé"
+    return "Moyen"
+
+
+def validate_norms_schema(df: pd.DataFrame) -> tuple[bool, list[str]]:
+    required = {"scale_type", "scale", "sex", "age_min", "age_max", "mean", "sd"}
+    missing = sorted(list(required - set(df.columns)))
+    errors: list[str] = []
+    if missing:
+        errors.append(f"Colonnes manquantes: {missing}")
+        return False, errors
+
+    # Types / valeurs
+    for col in ["age_min", "age_max", "mean", "sd"]:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            errors.append(f"Colonne '{col}' doit être numérique.")
+    if (df["age_min"] > df["age_max"]).any():
+        errors.append("Certaines lignes ont age_min > age_max.")
+    if (df["sd"] <= 0).any():
+        errors.append("Certaines lignes ont sd <= 0 (invalides).")
+    if not set(df["sex"].astype(str).unique()).issubset({"M", "F"}):
+        errors.append("Colonne 'sex' doit contenir uniquement 'M' ou 'F'.")
+    if not set(df["scale_type"].astype(str).unique()).issubset({"domain", "facet", "facette", "facets"}):
+        # On accepte plusieurs libellés au cas où, mais on prévient
+        errors.append("Colonne 'scale_type' devrait contenir au moins 'domain' (et optionnellement facet/facette).")
+
+    return (len(errors) == 0), errors
+
+
 def _pick_norms(norms: pd.DataFrame, scale_type: str, scale: str, sex: str, age: int) -> Tuple[float, float]:
     sub = norms[
-        (norms["scale_type"] == scale_type)
-        & (norms["scale"] == scale)
-        & (norms["sex"] == sex)
+        (norms["scale_type"].astype(str) == scale_type)
+        & (norms["scale"].astype(str) == str(scale))
+        & (norms["sex"].astype(str) == str(sex))
         & (norms["age_min"] <= age)
         & (norms["age_max"] >= age)
     ]
     if sub.empty:
-        raise ValueError("Aucune norme correspondante (sexe/âge) n’a été trouvée dans norms.csv.")
+        raise ValueError("Aucune norme correspondante (sexe/âge) n’a été trouvée.")
     row = sub.iloc[0]
     return float(row["mean"]), float(row["sd"])
 
@@ -131,37 +169,151 @@ def _z_t(raw: float, mean: float, sd: float) -> Dict[str, float]:
     return {"z": float(z), "t": float(t)}
 
 
-def _plot_line(domain_t: Dict[str, float]):
-    labels = ["N", "E", "O", "A", "C"]
-    y = [domain_t.get(k, np.nan) for k in labels]
-    x = np.arange(len(labels))
-
-    fig = plt.figure(figsize=(8.6, 3.2))
-    ax = fig.add_subplot(111)
-    ax.plot(x, y, marker="o")
-    ax.set_xticks(x, labels)
-    ax.set_ylim(20, 80)
-    ax.set_ylabel("Score T")
-    ax.set_title("Profil global (Scores T) — N/E/O/A/C")
-    ax.grid(True, alpha=0.25)
-    st.pyplot(fig, clear_figure=True)
+def fig_to_png_bytes(fig) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
+    buf.seek(0)
+    return buf.getvalue()
 
 
-def _plot_radar(domain_t: Dict[str, float]):
-    labels = ["N", "E", "O", "A", "C"]
-    values = [domain_t.get(k, np.nan) for k in labels]
-    values = values + values[:1]
-    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    angles = angles + angles[:1]
+def build_report_pdf(
+    *,
+    logo_bytes: bytes | None,
+    subject: dict,
+    scan_id: str,
+    domain_scores_raw: dict,
+    facet_scores_raw: dict,
+    domain_norm_detail: dict,  # contient raw/mean/sd/z/t
+    fig_line_png: bytes | None,
+    fig_radar_png: bytes | None,
+) -> bytes:
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=A4)
+    W, H = A4
 
-    fig = plt.figure(figsize=(5.6, 5.6))
-    ax = fig.add_subplot(111, polar=True)
-    ax.plot(angles, values)
-    ax.fill(angles, values, alpha=0.15)
-    ax.set_thetagrids(np.degrees(angles[:-1]), labels)
-    ax.set_ylim(20, 80)
-    ax.set_title("Radar (Scores T)", pad=18)
-    st.pyplot(fig, clear_figure=True)
+    def draw_logo():
+        if not logo_bytes:
+            return
+        try:
+            img = ImageReader(io.BytesIO(logo_bytes))
+            c.drawImage(img, W - 6.0 * cm, H - 3.2 * cm, width=4.5 * cm, height=1.6 * cm, mask="auto")
+        except Exception:
+            pass
+
+    def header(title: str):
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(2 * cm, H - 2 * cm, title)
+        c.setFont("Helvetica", 9)
+        c.setFillGray(0.4)
+        c.drawString(2 * cm, H - 2.6 * cm, f"Scan ID: {scan_id}")
+        c.setFillGray(0)
+
+    # Page 1 — Couverture
+    draw_logo()
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(2 * cm, H - 5 * cm, "Rapport NEO PI-R — OMR & Cotation")
+    c.setFont("Helvetica", 11)
+    c.setFillGray(0.25)
+    c.drawString(2 * cm, H - 6 * cm, "Rapport généré automatiquement (FR)")
+    c.setFillGray(0)
+
+    y = H - 8 * cm
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(2 * cm, y, "Informations sujet")
+    c.setFont("Helvetica", 10)
+    y -= 0.8 * cm
+    for k, v in subject.items():
+        c.drawString(2 * cm, y, f"{k}: {v}")
+        y -= 0.55 * cm
+    c.showPage()
+
+    # Page 2 — Domaines + interprétation
+    header("Résumé des résultats — Domaines")
+    draw_logo()
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(2 * cm, H - 4.0 * cm, "Domaines (brut + T-score + interprétation)")
+    x0, y0 = 2 * cm, H - 5.0 * cm
+    colw = [3.0 * cm, 3.0 * cm, 3.0 * cm, 7.0 * cm]
+    rowh = 0.65 * cm
+
+    headers = ["Domaine", "Brut", "T-score", "Interprétation"]
+    c.setFont("Helvetica-Bold", 9)
+    xx = x0
+    for i, htxt in enumerate(headers):
+        c.rect(xx, y0, colw[i], rowh, stroke=1, fill=0)
+        c.drawString(xx + 0.2 * cm, y0 + 0.2 * cm, htxt)
+        xx += colw[i]
+
+    c.setFont("Helvetica", 9)
+    y = y0 - rowh
+    for dom in ["N", "E", "O", "A", "C"]:
+        raw = int(domain_scores_raw.get(dom, 0))
+        t = float(domain_norm_detail.get(dom, {}).get("t", float("nan")))
+        interp = interpret_t(t)
+        values = [dom, str(raw), f"{t:.1f}" if np.isfinite(t) else "N/A", interp]
+        xx = x0
+        for i, v in enumerate(values):
+            c.rect(xx, y, colw[i], rowh, stroke=1, fill=0)
+            c.drawString(xx + 0.2 * cm, y + 0.2 * cm, v)
+            xx += colw[i]
+        y -= rowh
+
+    c.setFillGray(0.35)
+    c.setFont("Helvetica", 8)
+    c.drawString(2 * cm, 2.0 * cm, "Règle: T<45 Faible | 45–55 Moyen | >55 Élevé (modifiable).")
+    c.setFillGray(0)
+    c.showPage()
+
+    # Page 3 — Graphiques
+    header("Visualisations (Scores T)")
+    draw_logo()
+
+    y_img = H - 4.0 * cm
+    if fig_line_png:
+        img = ImageReader(io.BytesIO(fig_line_png))
+        c.drawImage(img, 2 * cm, y_img - 7.0 * cm, width=16 * cm, height=6.5 * cm, mask="auto")
+        y_img -= 7.6 * cm
+    if fig_radar_png:
+        img = ImageReader(io.BytesIO(fig_radar_png))
+        c.drawImage(img, 5.0 * cm, y_img - 10.0 * cm, width=10.5 * cm, height=10.5 * cm, mask="auto")
+    c.showPage()
+
+    # Page 4 — Facettes (brut)
+    header("Facettes (scores bruts)")
+    draw_logo()
+
+    df_f = pd.DataFrame({"Facette": list(facet_scores_raw.keys()), "Score brut": list(facet_scores_raw.values())})
+    df_f = df_f.sort_values("Facette")
+
+    x, y = 2 * cm, H - 4.0 * cm
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x, y, "Liste des facettes (brut)")
+    y -= 0.8 * cm
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(x, y, "Facette")
+    c.drawString(x + 12.5 * cm, y, "Score brut")
+    y -= 0.35 * cm
+    c.line(x, y, W - 2 * cm, y)
+    y -= 0.55 * cm
+    c.setFont("Helvetica", 9)
+
+    for _, row in df_f.iterrows():
+        if y < 2.2 * cm:
+            c.showPage()
+            header("Facettes (suite)")
+            y = H - 4.0 * cm
+            c.setFont("Helvetica", 9)
+
+        c.drawString(x, y, str(row["Facette"])[:60])
+        c.drawRightString(W - 2 * cm, y, str(int(row["Score brut"])))
+        y -= 0.45 * cm
+
+    c.showPage()
+    c.save()
+    out.seek(0)
+    return out.getvalue()
 
 
 def _kpi(label: str, value: int, tone: str = "base"):
@@ -180,6 +332,17 @@ def _kpi(label: str, value: int, tone: str = "base"):
 
 
 # =============================================================================
+# Session state init
+# =============================================================================
+if "norms_df" not in st.session_state:
+    st.session_state.norms_df = None
+if "norms_version" not in st.session_state:
+    st.session_state.norms_version = None
+if "scan_cache" not in st.session_state:
+    st.session_state.scan_cache = {}
+
+
+# =============================================================================
 # Header
 # =============================================================================
 st.markdown(
@@ -187,12 +350,12 @@ st.markdown(
 <div class="section-title">
   <div>
     <h1 style="margin:0">NEO PI-R — Scanner OMR & Cotation</h1>
-    <div class="muted">Workflow scientifique : scan → contrôle qualité → scores bruts → scores normés → exports</div>
+    <div class="muted">SaaS (FR) : import → scan → contrôle qualité → scores → interprétation → PDF → exports</div>
   </div>
   <div class="right">
-    <span class="pill">🧪 Version “scientifique”</span>
-    <span class="pill">🛡️ Validation fichier</span>
-    <span class="pill">📦 Exports JSON/CSV</span>
+    <span class="pill">🧪 Mode scientifique</span>
+    <span class="pill">📄 PDF multi-pages</span>
+    <span class="pill">🛠️ Admin (normes)</span>
   </div>
 </div>
 """,
@@ -200,13 +363,17 @@ st.markdown(
 )
 
 # =============================================================================
-# Sidebar (settings)
+# Sidebar navigation + settings
 # =============================================================================
 policy = SecurityPolicy(max_upload_mb=15)
 
 with st.sidebar:
+    st.header("Navigation")
+    nav = st.radio(" ", ["📋 Analyse", "🛠️ Administration"], index=0, label_visibility="collapsed")
+
+    st.divider()
     st.header("Paramètres")
-    st.caption("Réglages avancés. Laissez par défaut si votre scan est propre.")
+    st.caption("Laissez par défaut si votre scan est propre.")
 
     mark_threshold = st.slider("Seuil de marque (mark_threshold)", 0.5, 6.0, 1.7, 0.1)
     ambiguity_gap = st.slider("Seuil d’ambiguïté (ambiguity_gap)", 0.1, 6.0, 0.9, 0.1)
@@ -224,16 +391,11 @@ with st.sidebar:
     age = st.number_input("Âge", min_value=10, max_value=90, value=25, step=1)
 
     st.divider()
-    st.subheader("Fichiers")
-    key_file = st.file_uploader("Clé de cotation (scoring_key.csv)", type=["csv"])
-    norms_file = st.file_uploader("Normes (norms.csv) — optionnel", type=["csv"])
-
-    st.divider()
     st.markdown(
-        """
+        f"""
 <div class="card card-tight">
-<b>Conseils scan</b><br/>
-<span class="muted">Feuille complète • bonne lumière • pas de reflets • photo nette</span>
+<b>Normes actives</b><br/>
+<span class="muted">{'Personnalisées (v'+str(st.session_state.norms_version)+')' if st.session_state.norms_df is not None else 'Fichier data/norms.csv'}</span>
 </div>
 """,
         unsafe_allow_html=True,
@@ -241,9 +403,68 @@ with st.sidebar:
 
 
 # =============================================================================
-# Inputs (step 1)
+# ADMIN PAGE
+# =============================================================================
+if nav == "🛠️ Administration":
+    st.markdown("### 🛠️ Administration — Normes & versioning")
+
+    st.markdown(
+        """
+<div class="card">
+<b>Objectif</b><br/>
+<span class="muted">Importer des normes (norms.csv), valider le schéma, activer la version en session.</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("1) Importer norms.csv")
+    norms_upload = st.file_uploader("Fichier normes (CSV)", type=["csv"])
+
+    if norms_upload is not None:
+        raw = norms_upload.getvalue()
+        try:
+            df = pd.read_csv(io.BytesIO(raw))
+        except Exception as e:
+            st.error("Impossible de lire le CSV.")
+            st.exception(e)
+            st.stop()
+
+        ok, errors = validate_norms_schema(df)
+        if not ok:
+            st.error("Fichier invalide :")
+            for e in errors:
+                st.write(f"- {e}")
+            st.stop()
+
+        version = hashlib.sha256(raw).hexdigest()[:12]
+        st.session_state.norms_df = df
+        st.session_state.norms_version = version
+        st.success(f"Normes chargées ✅  (Version: {version})")
+        st.dataframe(df.head(50), use_container_width=True)
+
+    st.divider()
+    st.subheader("2) Réinitialiser normes personnalisées")
+    if st.button("♻️ Revenir aux normes par défaut (data/norms.csv)", use_container_width=True):
+        st.session_state.norms_df = None
+        st.session_state.norms_version = None
+        st.success("Normes réinitialisées ✅")
+
+    st.divider()
+    st.subheader("Schéma attendu")
+    st.code(
+        "Colonnes requises: scale_type, scale, sex, age_min, age_max, mean, sd\n"
+        "Exemples: scale_type='domain', scale='N', sex='M', age_min=18, age_max=25, mean=XX, sd=YY",
+        language="text",
+    )
+    st.stop()
+
+
+# =============================================================================
+# ANALYSE PAGE
 # =============================================================================
 st.markdown("### 1) Import")
+
 cL, cR = st.columns([1.2, 0.8], vertical_alignment="top")
 with cL:
     img_file = st.file_uploader("Image/scan de la feuille", type=["jpg", "jpeg", "png", "webp"])
@@ -251,7 +472,7 @@ with cR:
     st.markdown(
         """
 <div class="card">
-<b>Qualité de lecture</b><br/>
+<b>Conseils de capture</b><br/>
 <ul class="muted" style="margin:8px 0 0 18px; line-height: 1.55;">
   <li>Photo nette (sans flou)</li>
   <li>Feuille entière dans le cadre</li>
@@ -272,19 +493,35 @@ img_bytes = img_file.getvalue()
 img_hash = _hash_bytes(img_bytes)
 pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
-# scoring key
+# Fichiers (cotation + logo)
+st.markdown("### 2) Paramètres & fichiers")
+f1, f2, f3 = st.columns([1, 1, 1], vertical_alignment="top")
+with f1:
+    key_file = st.file_uploader("Clé de cotation (scoring_key.csv) — optionnel", type=["csv"])
+with f2:
+    logo_file = st.file_uploader("Logo (PNG/JPG) pour PDF — optionnel", type=["png", "jpg", "jpeg"])
+with f3:
+    st.markdown(
+        """
+<div class="card card-tight">
+<b>À savoir</b><br/>
+<span class="muted">La clé par défaut sera utilisée si vous n’importez rien.</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+# Charger clé de cotation
 if key_file is not None:
     scoring_key = load_scoring_key_from_bytes(key_file.getvalue())
 else:
     default_key_path = Path(__file__).resolve().parents[1] / "data" / "scoring_key.csv"
     scoring_key = load_scoring_key_from_bytes(default_key_path.read_bytes())
 
-# norms
-if norms_file is not None:
-    norms_df = pd.read_csv(io.BytesIO(norms_file.getvalue()))
-else:
-    norms_df = _load_norms_df()
+# Charger normes (admin -> session, sinon disque)
+norms_df = st.session_state.norms_df if st.session_state.norms_df is not None else _load_norms_df_from_disk()
 
+# Config scanner
 cfg = OMRConfig(
     mark_threshold=float(mark_threshold),
     ambiguity_gap=float(ambiguity_gap),
@@ -293,34 +530,25 @@ cfg = OMRConfig(
     black_dark_thresh=int(black_dark_thresh),
     black_baseline_quantile=float(black_baseline_quantile),
 )
-
 scanner = OMRScanner(cfg=cfg)
 
-# =============================================================================
-# Run scan (stable cache)
-# =============================================================================
-if "scan_cache" not in st.session_state:
-    st.session_state.scan_cache = {}
-
+# Stable cache key: image + cfg
 cfg_sig = json.dumps(asdict(cfg), sort_keys=True, ensure_ascii=False).encode("utf-8")
 cache_key = f"{img_hash}:{_hash_bytes(cfg_sig)}"
 
-st.markdown("### 2) Scan & contrôle qualité")
+st.markdown("### 3) Scan & contrôle qualité")
 btn_cols = st.columns([0.55, 0.45])
 with btn_cols[0]:
     run_scan = st.button("🚀 Lancer le scan & la cotation", use_container_width=True)
 with btn_cols[1]:
-    st.markdown(
-        '<div class="pill">Astuce : les changements de sliders ne relancent pas le scan tant que vous ne cliquez pas.</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="pill">Le scan ne se relance que sur clic.</div>', unsafe_allow_html=True)
 
 if run_scan:
     with st.spinner("Analyse en cours…"):
         try:
             result = scanner.scan_pil(pil_img, scoring_key)
         except Exception as e:
-            st.error("Échec du scan. Détail ci-dessous :")
+            st.error("Échec du scan. Détails :")
             st.exception(e)
             st.stop()
     st.session_state.scan_cache[cache_key] = result
@@ -330,28 +558,31 @@ if result is None:
     st.info("Cliquez sur **Lancer le scan & la cotation** pour démarrer.")
     st.stop()
 
-# =============================================================================
-# Dashboard (KPIs)
-# =============================================================================
 stats = result.diagnostics.get("stats", {})
 proto = result.protocol or {}
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
-    _kpi("Réponses vides", int(proto.get("n_blank", 0)), tone="warn" if int(proto.get("n_blank", 0)) > 0 else "ok")
+    nb = int(proto.get("n_blank", 0))
+    _kpi("Réponses vides", nb, tone="warn" if nb > 0 else "ok")
 with k2:
-    _kpi("Ambiguës", int(stats.get("ambiguous", 0)), tone="warn" if int(stats.get("ambiguous", 0)) > 0 else "ok")
+    amb = int(stats.get("ambiguous", 0))
+    _kpi("Ambiguës", amb, tone="warn" if amb > 0 else "ok")
 with k3:
-    _kpi("Faible confiance", int(stats.get("low_conf", 0)), tone="warn" if int(stats.get("low_conf", 0)) > 0 else "ok")
+    low = int(stats.get("low_conf", 0))
+    _kpi("Faible confiance", low, tone="warn" if low > 0 else "ok")
 with k4:
-    _kpi("Imputées", int(proto.get("imputed", 0)), tone="bad" if int(proto.get("imputed", 0)) > 0 else "ok")
+    imp = int(proto.get("imputed", 0))
+    _kpi("Imputées", imp, tone="bad" if imp > 0 else "ok")
 
-st.success(f"Scan terminé ✅  — scan_id : {result.scan_id}")
+st.success(f"Scan terminé ✅ — scan_id : {result.scan_id}")
 
 # =============================================================================
-# Tabs (pro workflow)
+# Tabs
 # =============================================================================
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Résultats", "🧠 Normes (Z/T)", "🔍 Qualité & Debug", "⬇️ Exports"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📊 Résultats", "🧠 Normes & Interprétation", "🔍 Qualité", "📄 Rapport PDF", "⬇️ Exports"]
+)
 
 # --- TAB 1: Résultats
 with tab1:
@@ -369,9 +600,9 @@ with tab1:
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("#### Relecture humaine (optionnelle)")
-    st.caption("Corriger uniquement les items vides/ambiguës/faible confiance, puis recalculer.")
+    st.caption("Corrigez uniquement les items vides/ambiguës/faible confiance, puis recalculer.")
 
-    flagged = []
+    flagged: list[int] = []
     for item_id in range(1, 241):
         md = result.meta.get(item_id, {})
         if md.get("blank") or md.get("ambiguous") or float(md.get("confidence", 1.0)) < 0.55:
@@ -422,40 +653,69 @@ with tab1:
                     st.success("Recalcul terminé ✅")
                     st.json({"protocol": proto2, "domain_scores": domain_scores2, "facette_scores": facette_scores2})
                 except Exception as e:
-                    st.error("Échec du recalcul. Détail :")
+                    st.error("Échec du recalcul. Détails :")
                     st.exception(e)
 
-# --- TAB 2: Normes (Z/T) + Graphiques
+# --- TAB 2: Normes & interprétation (Z/T + graphiques)
 with tab2:
-    st.markdown("#### Scores normés (Z & T)")
-    st.caption("T = 50 + 10×Z — dépend de `norms.csv` ou du fichier importé.")
+    st.markdown("#### Calcul des scores normés (Z / T)")
+    st.caption("T = 50 + 10×Z — dépend des normes actives.")
 
-    domain_t: Dict[str, float] = {}
     domain_norm_detail: Dict[str, Any] = {}
+    domain_t: Dict[str, float] = {}
 
     try:
         for d, raw in result.domain_scores.items():
             mean, sd = _pick_norms(norms_df, scale_type="domain", scale=d, sex=sex, age=int(age))
             res = _z_t(float(raw), mean, sd)
-            domain_t[d] = res["t"]
-            domain_norm_detail[d] = {"raw": int(raw), "mean": mean, "sd": sd, **res}
+            domain_t[d] = float(res["t"])
+            domain_norm_detail[d] = {"raw": int(raw), "mean": float(mean), "sd": float(sd), **res}
     except Exception as e:
         st.warning(f"Impossible de calculer les scores T : {e}")
         domain_norm_detail = {}
+        domain_t = {}
 
     if domain_norm_detail:
-        df = pd.DataFrame(domain_norm_detail).T
-        st.dataframe(df, use_container_width=True)
+        df_dom = pd.DataFrame(domain_norm_detail).T
+        df_dom["interprétation"] = df_dom["t"].apply(lambda x: interpret_t(float(x)))
+        st.subheader("Interprétation automatique (Domaines)")
+        st.dataframe(df_dom[["raw", "mean", "sd", "z", "t", "interprétation"]], use_container_width=True)
+
+        # Figures
+        labels = ["N", "E", "O", "A", "C"]
+        y = [float(domain_norm_detail.get(k, {}).get("t", np.nan)) for k in labels]
+        x = np.arange(len(labels))
+
+        fig_line = plt.figure(figsize=(8.6, 3.2))
+        ax = fig_line.add_subplot(111)
+        ax.plot(x, y, marker="o")
+        ax.set_xticks(x, labels)
+        ax.set_ylim(20, 80)
+        ax.set_ylabel("Score T")
+        ax.set_title("Profil global (Scores T) — N/E/O/A/C")
+        ax.grid(True, alpha=0.25)
+
+        vals = [float(domain_norm_detail.get(k, {}).get("t", np.nan)) for k in labels]
+        vals2 = vals + vals[:1]
+        ang = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        ang2 = ang + ang[:1]
+        fig_radar = plt.figure(figsize=(5.6, 5.6))
+        axr = fig_radar.add_subplot(111, polar=True)
+        axr.plot(ang2, vals2)
+        axr.fill(ang2, vals2, alpha=0.15)
+        axr.set_thetagrids(np.degrees(ang), labels)
+        axr.set_ylim(20, 80)
+        axr.set_title("Radar (Scores T)", pad=18)
 
         g1, g2 = st.columns([1.2, 0.8])
         with g1:
-            _plot_line(domain_t)
+            st.pyplot(fig_line, clear_figure=True)
         with g2:
-            _plot_radar(domain_t)
+            st.pyplot(fig_radar, clear_figure=True)
     else:
-        st.info("Aucun score T calculé. Vérifiez votre fichier norms.csv (colonnes/valeurs).")
+        st.info("Aucun score T calculé. Vérifiez les normes (Administration) ou data/norms.csv.")
 
-# --- TAB 3: Qualité & Debug (overlay/mask + JSON)
+# --- TAB 3: Qualité
 with tab3:
     st.markdown("#### Contrôle qualité (visuel)")
     c1, c2 = st.columns(2)
@@ -484,9 +744,88 @@ with tab3:
         }
     )
 
-# --- TAB 4: Exports (clean, stable)
+# --- TAB 4: PDF Report
 with tab4:
-    st.markdown("#### Exports")
+    st.markdown("#### Rapport PDF (multi-pages, FR)")
+    st.caption("Inclut : couverture + domaines (brut/T/interprétation) + graphiques + facettes.")
+
+    # Recalcule (ou réutilise) normes/figures si possible
+    domain_norm_detail_pdf: Dict[str, Any] = {}
+    domain_t_pdf: Dict[str, float] = {}
+
+    try:
+        for d, raw in result.domain_scores.items():
+            mean, sd = _pick_norms(norms_df, scale_type="domain", scale=d, sex=sex, age=int(age))
+            res = _z_t(float(raw), mean, sd)
+            domain_t_pdf[d] = float(res["t"])
+            domain_norm_detail_pdf[d] = {"raw": int(raw), "mean": float(mean), "sd": float(sd), **res}
+    except Exception:
+        domain_norm_detail_pdf = {}
+        domain_t_pdf = {}
+
+    fig_line_png = None
+    fig_radar_png = None
+
+    if domain_norm_detail_pdf:
+        labels = ["N", "E", "O", "A", "C"]
+        y = [float(domain_norm_detail_pdf.get(k, {}).get("t", np.nan)) for k in labels]
+        x = np.arange(len(labels))
+
+        fig_line = plt.figure(figsize=(8.6, 3.2))
+        ax = fig_line.add_subplot(111)
+        ax.plot(x, y, marker="o")
+        ax.set_xticks(x, labels)
+        ax.set_ylim(20, 80)
+        ax.set_ylabel("Score T")
+        ax.set_title("Profil global (Scores T) — N/E/O/A/C")
+        ax.grid(True, alpha=0.25)
+        fig_line_png = fig_to_png_bytes(fig_line)
+
+        vals = [float(domain_norm_detail_pdf.get(k, {}).get("t", np.nan)) for k in labels]
+        vals2 = vals + vals[:1]
+        ang = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        ang2 = ang + ang[:1]
+        fig_radar = plt.figure(figsize=(5.6, 5.6))
+        axr = fig_radar.add_subplot(111, polar=True)
+        axr.plot(ang2, vals2)
+        axr.fill(ang2, vals2, alpha=0.15)
+        axr.set_thetagrids(np.degrees(ang), labels)
+        axr.set_ylim(20, 80)
+        axr.set_title("Radar (Scores T)", pad=18)
+        fig_radar_png = fig_to_png_bytes(fig_radar)
+    else:
+        st.warning("Scores T non disponibles → le PDF sera généré sans graphiques et sans T-scores.")
+
+    logo_bytes = logo_file.getvalue() if logo_file is not None else None
+    subject_info = {"Sexe": sex, "Âge": int(age)}
+
+    try:
+        pdf_bytes = build_report_pdf(
+            logo_bytes=logo_bytes,
+            subject=subject_info,
+            scan_id=str(result.scan_id),
+            domain_scores_raw=result.domain_scores,
+            facet_scores_raw=result.facette_scores,
+            domain_norm_detail=domain_norm_detail_pdf,
+            fig_line_png=fig_line_png,
+            fig_radar_png=fig_radar_png,
+        )
+
+        st.download_button(
+            "⬇️ Télécharger le rapport PDF",
+            data=pdf_bytes,
+            file_name=f"NEO_PI-R_Rapport_{result.scan_id}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.error("Impossible de générer le PDF (ReportLab). Détails :")
+        st.exception(e)
+
+# --- TAB 5: Exports
+with tab5:
+    st.markdown("#### Exports (CSV / JSON)")
+
     resp_csv = io.StringIO()
     resp_csv.write("item,choice\n")
     for item_id in range(1, 241):
@@ -506,6 +845,7 @@ with tab4:
                     "domain_scores_raw": result.domain_scores,
                     "facette_scores_raw": result.facette_scores,
                     "cfg": asdict(cfg),
+                    "norms_version": st.session_state.norms_version,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -516,11 +856,9 @@ with tab4:
     with c3:
         _download(
             "Télécharger audit.json",
-            json.dumps(
-                {"diagnostics": result.diagnostics, "meta": result.meta},
-                ensure_ascii=False,
-                indent=2,
-            ).encode("utf-8"),
+            json.dumps({"diagnostics": result.diagnostics, "meta": result.meta}, ensure_ascii=False, indent=2).encode(
+                "utf-8"
+            ),
             "audit.json",
             "application/json",
         )
