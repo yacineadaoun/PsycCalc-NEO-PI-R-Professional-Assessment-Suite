@@ -1,6 +1,0 @@
-[server]
-maxUploadSize = 15
-enableXsrfProtection = true
-
-[browser]
-gatherUsageStats = false
