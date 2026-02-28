@@ -32,7 +32,7 @@ from neo_pir_omr.core.security import SecurityPolicy, validate_file_bytes
 # Page config
 # =============================================================================
 st.set_page_config(
-    page_title="NEO PI-R — OMR & Cotation (SaaS)",
+    page_title="NEO PI-R — OMR & Cotation by ADAOUN YACIN (SaaS)",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded",
