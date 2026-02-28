@@ -23,8 +23,11 @@ from neo_pir_omr.core.engine import (
 from neo_pir_omr.core.security import SecurityPolicy, validate_file_bytes
 
 
+# =========================
+# Page config + style
+# =========================
 st.set_page_config(
-    page_title="NEO PI‑R — OMR Scanner & Scoring (Scientific)",
+    page_title="NEO PI-R — OMR Scanner & Scoring (Scientific)",
     page_icon="🧾",
     layout="wide",
 )
@@ -35,17 +38,26 @@ st.markdown(
       .block-container {padding-top: 1.2rem;}
       div[data-testid="stMetricValue"] {font-size: 1.6rem;}
       .tiny {opacity:.85; font-size: .9rem;}
-      .card {padding: 1rem 1.2rem; border-radius: 18px; border: 1px solid rgba(255,255,255,.08);
-             background: rgba(255,255,255,.03);}
+      .card {
+        padding: 1rem 1.2rem;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,.08);
+        background: rgba(255,255,255,.03);
+      }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🧾 نظام المسح الضوئي (OMR) لاختبار NEO PI‑R")
-st.caption("هدف التطبيق: **مسح ورقة الإجابة** ➜ **استخراج الإجابات** ➜ **حساب الدرجات علمياً** ➜ **إخراج تقرير ورسوم بيانية**.")
+st.title("🧾 نظام المسح الضوئي (OMR) لاختبار NEO PI-R")
+st.caption(
+    "هدف التطبيق: **مسح ورقة الإجابة** ➜ **استخراج الإجابات** ➜ **حساب الدرجات علمياً** ➜ **إخراج تقرير ورسوم بيانية**."
+)
 
 
+# =========================
+# Helpers
+# =========================
 def _hash_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:16]
 
@@ -59,7 +71,9 @@ def _load_norms_df() -> pd.DataFrame:
     return pd.read_csv(p)
 
 
-def _pick_norms(norms: pd.DataFrame, scale_type: str, scale: str, sex: str, age: int) -> Tuple[float, float]:
+def _pick_norms(
+    norms: pd.DataFrame, scale_type: str, scale: str, sex: str, age: int
+) -> Tuple[float, float]:
     sub = norms[
         (norms["scale_type"] == scale_type)
         & (norms["scale"] == scale)
@@ -114,6 +128,9 @@ def _plot_radar(domain_t: Dict[str, float]):
     st.pyplot(fig, clear_figure=True)
 
 
+# =========================
+# Sidebar
+# =========================
 policy = SecurityPolicy(max_upload_mb=15)
 
 with st.sidebar:
@@ -142,6 +159,9 @@ with st.sidebar:
     norms_file = st.file_uploader("ملف المعايير norms.csv (اختياري)", type=["csv"])
 
 
+# =========================
+# Inputs
+# =========================
 left, right = st.columns([1.25, 0.75], vertical_alignment="top")
 with left:
     img_file = st.file_uploader("📷 ارفع صورة/سكانر ورقة الإجابة", type=["jpg", "jpeg", "png", "webp"])
@@ -149,38 +169,45 @@ with right:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("نصائح لنتيجة دقيقة")
     st.markdown(
-    """
+        """
 - صورة واضحة بدون اهتزاز  
 - الورقة كاملة داخل الإطار  
 - إضاءة متجانسة بدون ظل قوي  
 - تجنب الانعكاس اللامع  
 - استخدم قلم أزرق/أسود واضح  
 """
-)
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
 if not img_file:
     st.stop()
 
 validate_file_bytes(img_file.name, img_file.size, policy)
+
 img_bytes = img_file.getvalue()
 img_hash = _hash_bytes(img_bytes)
 
 pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
 
+# =========================
+# Load scoring key + norms
+# =========================
 if key_file is not None:
     scoring_key = load_scoring_key_from_bytes(key_file.getvalue())
 else:
     default_key_path = Path(__file__).resolve().parents[1] / "data" / "scoring_key.csv"
     scoring_key = load_scoring_key_from_bytes(default_key_path.read_bytes())
 
-
 if norms_file is not None:
     norms_df = pd.read_csv(io.BytesIO(norms_file.getvalue()))
 else:
     norms_df = _load_norms_df()
 
+
+# =========================
+# Scanner config
+# =========================
 cfg = OMRConfig(
     mark_threshold=float(mark_threshold),
     ambiguity_gap=float(ambiguity_gap),
@@ -193,6 +220,9 @@ cfg = OMRConfig(
 scanner = OMRScanner(cfg=cfg)
 
 
+# =========================
+# Run scan (stable)
+# =========================
 if "scan_cache" not in st.session_state:
     st.session_state.scan_cache = {}
 
@@ -212,15 +242,18 @@ if result is None:
     st.stop()
 
 
+# =========================
+# Outputs
+# =========================
 st.success(f"تم المسح بنجاح ✅  (scan_id: {result.scan_id})")
 
-m = result.diagnostics.get("stats", {})
+stats = result.diagnostics.get("stats", {})
 proto = result.protocol or {}
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("الأسئلة الفارغة", int(proto.get("n_blank", 0)))
-m2.metric("الغامضة", int(m.get("ambiguous", 0)))
-m3.metric("ثقة منخفضة", int(m.get("low_conf", 0)))
+m2.metric("الغامضة", int(stats.get("ambiguous", 0)))
+m3.metric("ثقة منخفضة", int(stats.get("low_conf", 0)))
 m4.metric("تمّ تعويضها", int(proto.get("imputed", 0)))
 
 with st.expander("🔍 تفاصيل تقنية (للتحقق)", expanded=False):
@@ -246,6 +279,7 @@ with v2:
     st.image(result.debug_mask, use_container_width=True)
 
 
+# Raw scores
 st.subheader("📌 النتائج الأولية (Raw Scores)")
 c1, c2 = st.columns(2)
 with c1:
@@ -256,6 +290,7 @@ with c2:
     st.json(result.facette_scores)
 
 
+# Normed scores (Z/T)
 st.subheader("📈 النتائج المعيارية (Z / T)")
 domain_t: Dict[str, float] = {}
 domain_norm_detail: Dict[str, Any] = {}
@@ -280,6 +315,7 @@ if domain_norm_detail:
         _plot_radar(domain_t)
 
 
+# Human review + recompute
 st.subheader("🧑‍🔬 مراجعة بشرية (اختيارية) + إعادة الحساب")
 st.caption("استخدمها فقط إذا كان هناك فراغات/غموض. إعادة الحساب تتم عبر زر مستقل لضمان الاستقرار.")
 
@@ -312,12 +348,15 @@ with st.expander(f"فتح المراجعة البشرية — العناصر ا�
             col1, col2 = st.columns([0.6, 1.4])
             with col1:
                 st.markdown(f"**Item {item_id}**")
-                st.markdown(f"<span class='tiny'>confidence: {float(md.get('confidence', 0.0)):.2f}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='tiny'>confidence: {float(md.get('confidence', 0.0)):.2f}</span>",
+                    unsafe_allow_html=True,
+                )
             with col2:
                 choice = st.selectbox(
                     f"تصحيح Item {item_id}",
                     options=[-1, 0, 1, 2, 3, 4],
-                    index=[-1, 0, 1, 2, 3, 4].index(current if current in [-1,0,1,2,3,4] else -1),
+                    index=[-1, 0, 1, 2, 3, 4].index(current if current in [-1, 0, 1, 2, 3, 4] else -1),
                     help="-1 = فارغ ; 0..4 = خيار محدد",
                     key=f"corr_{item_id}",
                 )
@@ -335,13 +374,14 @@ with st.expander(f"فتح المراجعة البشرية — العناصر ا�
             st.json({"protocol": proto2, "domain_scores": domain_scores2, "facette_scores": facette_scores2})
 
 
+# Exports
 st.subheader("⬇️ تنزيل النتائج")
+
 resp_csv = io.StringIO()
-resp_csv.write("item,choice
-")
+resp_csv.write("item,choice\n")
 for item_id in range(1, 241):
-    resp_csv.write(f"{item_id},{int(result.responses_final.get(item_id, -1))}
-")
+    value = int(result.responses_final.get(item_id, -1))
+    resp_csv.write(f"{item_id},{value}\n")
 
 colx, coly, colz = st.columns(3)
 with colx:
